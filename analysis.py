@@ -129,3 +129,101 @@ plt.savefig('figures/feature_importance.png', dpi=150)
 print("Saved feature_importance.png")
 
 print("\nAll figures saved!")
+# ===== SHAP ANALYSIS =====
+print("\n=== SHAP ANALYSIS ===")
+import shap
+
+# SHAP Explainer for XGBoost
+explainer = shap.TreeExplainer(xgb)
+shap_values = explainer.shap_values(X_val)
+
+# 1. SHAP Beeswarm Summary Plot
+print("Generating SHAP summary plot...")
+plt.figure()
+shap.summary_plot(shap_values, X_val, show=False)
+plt.tight_layout()
+plt.savefig('figures/shap_summary.png', dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved shap_summary.png")
+
+# 2. SHAP Dependence Plot - ap_hi (most important feature)
+print("Generating SHAP dependence plot...")
+plt.figure()
+shap.dependence_plot('ap_hi', shap_values, X_val, show=False)
+plt.tight_layout()
+plt.savefig('figures/shap_dependence_aphi.png', dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved shap_dependence_aphi.png")
+
+# 3. SHAP Waterfall Plot - single patient
+print("Generating SHAP force plot...")
+idx = 0
+plt.figure()
+shap.waterfall_plot(
+    shap.Explanation(
+        values=shap_values[idx],
+        base_values=explainer.expected_value,
+        data=X_val.iloc[idx],
+        feature_names=list(X_val.columns)
+    ),
+    show=False
+)
+plt.tight_layout()
+plt.savefig('figures/shap_force_plot.png', dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved shap_force_plot.png")
+# ===== HYPERPARAMETER TUNING =====
+print("\n=== HYPERPARAMETER TUNING ===")
+from sklearn.model_selection import GridSearchCV
+
+param_grid = {
+    'n_estimators': [100, 200],
+    'max_depth': [3, 5, 7],
+    'learning_rate': [0.05, 0.1, 0.2],
+    'subsample': [0.8, 1.0],
+}
+
+print("Running GridSearchCV for XGBoost (this may take a few minutes)...")
+xgb_tuned = XGBClassifier(random_state=42, eval_metric='logloss')
+grid_search = GridSearchCV(xgb_tuned, param_grid, cv=5, scoring='roc_auc', n_jobs=-1, verbose=1)
+grid_search.fit(X_train, y_train)
+
+print(f"Best params: {grid_search.best_params_}")
+print(f"Best CV AUC: {grid_search.best_score_:.4f}")
+
+best_xgb = grid_search.best_estimator_
+best_pred = best_xgb.predict(X_val)
+best_prob = best_xgb.predict_proba(X_val)[:,1]
+
+print(f"Tuned XGBoost - Acc={accuracy_score(y_val, best_pred):.4f} | "
+      f"F1={f1_score(y_val, best_pred):.4f} | "
+      f"AUC={roc_auc_score(y_val, best_prob):.4f}")
+
+# ===== ERROR ANALYSIS =====
+print("\n=== ERROR ANALYSIS ===")
+import numpy as np
+
+val_df = X_val.copy()
+val_df['true_label'] = y_val.values
+val_df['predicted'] = best_pred
+val_df['probability'] = best_prob
+
+false_negatives = val_df[(val_df['true_label'] == 1) & (val_df['predicted'] == 0)]
+false_positives = val_df[(val_df['true_label'] == 0) & (val_df['predicted'] == 1)]
+
+print(f"False Negatives (missed disease): {len(false_negatives)}")
+print(f"False Positives (false alarm): {len(false_positives)}")
+print(f"\nFalse Negative profile (mean values):")
+print(false_negatives[['age_years','ap_hi','ap_lo','cholesterol','bmi']].mean().round(2))
+
+# Overconfident wrong predictions
+wrong = val_df[val_df['true_label'] != val_df['predicted']]
+overconfident = wrong[abs(wrong['probability'] - 0.5) > 0.3]
+print(f"\nOverconfident wrong predictions: {len(overconfident)}")
+
+# Save error analysis
+false_negatives.to_csv('false_negatives.csv', index=False)
+false_positives.to_csv('false_positives.csv', index=False)
+print("Saved false_negatives.csv and false_positives.csv")
+
+print("\n=== ALL DONE ===")
